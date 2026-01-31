@@ -87,6 +87,16 @@ async function main() {
     };
   });
 
+  // Tools that are safe to auto-allow (not destructive)
+  const AUTO_ALLOW_TOOLS = [
+    'AskUserQuestion',  // Just asking questions, not taking actions
+    'Read',             // Reading files is safe
+    'Glob',             // Searching files is safe
+    'Grep',             // Searching content is safe
+    'WebSearch',        // Web searches are safe
+    'WebFetch',         // Fetching web content is safe
+  ];
+
   // Permission request hook
   let requestCounter = 0;
   app.post<{ Body: HookPayload }>('/hook/permission', async (request) => {
@@ -94,6 +104,12 @@ async function main() {
     const payload = request.body;
 
     console.log(`\n[${id}] Permission request: ${payload.tool_name}`);
+
+    // Auto-allow safe tools
+    if (AUTO_ALLOW_TOOLS.includes(payload.tool_name)) {
+      console.log(`[${id}] Auto-allowing safe tool: ${payload.tool_name}`);
+      return { decision: 'allow', reason: 'Auto-allowed safe tool' };
+    }
 
     // Check if bot is connected
     if (!bot.getChatId()) {
