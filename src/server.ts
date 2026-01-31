@@ -55,8 +55,11 @@ async function main() {
     process.exit(1);
   }
 
-  // Initialize Telegram bot
-  const bot = new TelegramBot(config.telegramBotToken);
+  // Initialize Telegram bot with persistence callback
+  const bot = new TelegramBot(config.telegramBotToken, (chatId) => {
+    // Save chat ID to config when it changes
+    saveConfig({ telegramChatId: chatId });
+  });
 
   // Restore saved chat ID if available
   if (config.telegramChatId) {

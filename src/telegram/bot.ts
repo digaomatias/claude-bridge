@@ -7,6 +7,9 @@
 
 import { Bot, InlineKeyboard, Context } from 'grammy';
 
+// Callback for when chat ID changes (for persistence)
+type ChatIdCallback = (chatId: string) => void;
+
 export interface ApprovalRequest {
   id: string;
   sessionId: string;
@@ -21,9 +24,11 @@ export class TelegramBot {
   private bot: Bot;
   private chatId: string | null = null;
   private pendingApprovals = new Map<string, ApprovalRequest>();
+  private onChatIdChange: ChatIdCallback | null = null;
 
-  constructor(token: string) {
+  constructor(token: string, onChatIdChange?: ChatIdCallback) {
     this.bot = new Bot(token);
+    this.onChatIdChange = onChatIdChange || null;
     this.setupHandlers();
   }
 
@@ -31,6 +36,12 @@ export class TelegramBot {
     // /start command - register chat ID
     this.bot.command('start', async (ctx) => {
       this.chatId = ctx.chat.id.toString();
+
+      // Persist the chat ID
+      if (this.onChatIdChange) {
+        this.onChatIdChange(this.chatId);
+      }
+
       await ctx.reply(
         `🤖 *ClaudeBridge Connected*\n\n` +
           `Chat ID: \`${this.chatId}\`\n\n` +
