@@ -6,8 +6,9 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.js",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "server": "tsx src/server.ts",
     "poc:server": "tsx src/poc/hook-server.ts",
     "poc:test": "tsx src/poc/test-hook.ts"
   },
@@ -26,6 +27,8 @@
     "typescript": "^5.3.0"
   },
   "dependencies": {
-    "fastify": "^5.0.0"
+    "dotenv": "^17.2.3",
+    "fastify": "^5.0.0",
+    "grammy": "^1.39.3"
   }
 }

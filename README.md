@@ -14,33 +14,43 @@ User (Telegram) → Front-end AI → Claude Code Session
                       └──── Hook Bridge ───┘
 ```
 
-## Current Status: Phase 0 - POC
+## Current Status: Phase 1 - Telegram Approval Bridge
 
-Proving bidirectional communication between Claude Code hooks and our server.
+Permission requests from Claude Code are forwarded to Telegram with Approve/Deny buttons.
 
 ## Quick Start
 
-### 1. Install Dependencies
+### 1. Create a Telegram Bot
+
+1. Open Telegram and search for **@BotFather**
+2. Send `/newbot` and follow the prompts
+3. Copy the bot token you receive
+
+### 2. Install & Configure
 
 ```bash
+cd ~/source/claude-bridge
 npm install
+
+# Set your bot token
+export TELEGRAM_BOT_TOKEN="your-token-here"
 ```
 
-### 2. Start the Hook Server
+### 3. Start the Server
 
 ```bash
-npm run poc:server
+npm run server
 ```
 
-### 3. Test the Hook (in another terminal)
+### 4. Connect Telegram
 
-```bash
-npm run poc:test
-```
+1. Open your bot in Telegram
+2. Send `/start` to connect
+3. You'll see confirmation that the chat is connected
 
-### 4. Configure Claude Code Hooks
+### 5. Configure Claude Code Hooks
 
-Add the following to your Claude Code settings (`.claude/settings.json`):
+Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -60,20 +70,47 @@ Add the following to your Claude Code settings (`.claude/settings.json`):
 }
 ```
 
-## Hook Server Commands
+### 6. Test It!
 
-When the hook server is running, you can use these commands:
+1. Start Claude Code in any project
+2. Ask Claude to do something requiring permission
+3. Check Telegram - you'll see the request with Approve/Deny buttons
+4. Tap a button - Claude Code will proceed accordingly
 
-- `allow [id]` - Approve the request
-- `deny [id]` - Deny the request
-- `list` - Show pending requests
-- `help` - Show help
-- `quit` - Stop the server
+## Commands
+
+### NPM Scripts
+
+| Command | Description |
+|---------|-------------|
+| `npm run server` | Start the main server (Telegram + hooks) |
+| `npm run dev` | Start with auto-reload (development) |
+| `npm run poc:server` | POC server (manual stdin approval) |
+| `npm run poc:test` | Test hook communication |
+
+### Telegram Commands
+
+| Command | Description |
+|---------|-------------|
+| `/start` | Connect this chat to ClaudeBridge |
+| `/status` | Show pending approval requests |
+| `/help` | Show help |
+
+## Configuration
+
+Configuration can be set via environment variables or `~/.claude-bridge/config.json`:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather | (required) |
+| `TELEGRAM_CHAT_ID` | Pre-configured chat ID | (from /start) |
+| `PORT` | Server port | 3847 |
+| `HOST` | Server host | 127.0.0.1 |
 
 ## Development Phases
 
 - [x] Phase 0: POC - Hook bidirectional communication
-- [ ] Phase 1: Basic Approval Bridge (Telegram integration)
+- [x] Phase 1: Basic Approval Bridge (Telegram integration)
 - [ ] Phase 2: Front-end AI Integration
 - [ ] Phase 3: Session Management
 - [ ] Phase 4: Polish & Robustness
@@ -83,19 +120,29 @@ When the hook server is running, you can use these commands:
 ```
 claude-bridge/
 ├── src/
-│   ├── index.ts           # Main entry point
+│   ├── index.ts           # Usage information
+│   ├── server.ts          # Main server (Phase 1+)
+│   ├── core/
+│   │   └── config.ts      # Configuration management
+│   ├── telegram/
+│   │   └── bot.ts         # Telegram bot (grammY)
 │   ├── poc/               # Phase 0 POC code
-│   │   ├── hook-server.ts # Hook receiver server
-│   │   └── test-hook.ts   # Hook test script
-│   ├── core/              # Core session management (Phase 3)
-│   ├── telegram/          # Telegram bot (Phase 1)
-│   └── hooks/             # Hook handling logic
+│   │   ├── hook-server.ts
+│   │   └── test-hook.ts
+│   └── hooks/             # Hook handling (future)
 ├── hooks/
-│   └── claude-hooks.json  # Example Claude Code hook config
+│   └── claude-hooks.json  # Example hook config
+├── .env.example           # Environment template
 ├── package.json
 ├── tsconfig.json
 └── README.md
 ```
+
+## Timeout Handling
+
+- Permission requests timeout after **10 minutes** (Claude Code default)
+- At **8 minutes**, you'll receive a warning in Telegram
+- If not answered by **10 minutes**, the request is auto-denied
 
 ## License
 

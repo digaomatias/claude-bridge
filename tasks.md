@@ -1,18 +1,19 @@
 # ClaudeBridge - Task Backlog
 
-## Current Sprint: Phase 0 - POC
+## Current Sprint: Phase 1 - Telegram Approval Bridge
 
 ### Done (Phase 0)
 - [x] **P0** Verify POC hook server works with actual Claude Code hooks
 
-### Todo
+### Done (Phase 1)
+- [x] **P1** Create Telegram bot skeleton with grammY
+- [x] **P1** Implement inline approval buttons in Telegram
+- [x] **P1** Connect hook server to Telegram bot
+- [x] **P1** Add timeout handling for approval requests
+- [x] **P2** Add request ID correlation
 
-#### Phase 1: Basic Approval Bridge
-- [ ] **P1** Create Telegram bot skeleton with grammY
-- [ ] **P1** Implement inline approval buttons in Telegram
-- [ ] **P1** Connect hook server to Telegram bot
-- [ ] **P1** Add timeout handling for approval requests
-- [ ] **P2** Add request ID correlation
+### In Progress
+- [~] **P1** Test full Telegram approval flow with real Claude Code
 
 #### Phase 2: Front-end AI Integration
 - [ ] **P1** Design multi-model provider abstraction (borrow from OpenClaw)
