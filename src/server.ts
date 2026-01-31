@@ -113,7 +113,7 @@ async function main() {
       console.log(`[${id}] Auto-allowing safe tool: ${payload.tool_name}`);
       return {
         hookSpecificOutput: {
-          hookEventName: 'PermissionRequest',
+          hookEventName: 'PreToolUse',
           permissionDecision: 'allow',
           permissionDecisionReason: 'Auto-allowed safe tool',
         },
@@ -125,7 +125,7 @@ async function main() {
       console.log(`[${id}] No Telegram chat connected. Denying by default.`);
       return {
         hookSpecificOutput: {
-          hookEventName: 'PermissionRequest',
+          hookEventName: 'PreToolUse',
           permissionDecision: 'deny',
           permissionDecisionReason: 'No Telegram chat connected',
         },
@@ -146,7 +146,7 @@ async function main() {
 
       const response: HookResponse = {
         hookSpecificOutput: {
-          hookEventName: 'PermissionRequest',
+          hookEventName: 'PreToolUse',
           permissionDecision: decision,
           permissionDecisionReason:
             decision === 'allow' ? 'Approved via Telegram' : 'Denied via Telegram',
@@ -158,7 +158,7 @@ async function main() {
       console.error(`[${id}] Error:`, err);
       return {
         hookSpecificOutput: {
-          hookEventName: 'PermissionRequest',
+          hookEventName: 'PreToolUse',
           permissionDecision: 'deny',
           permissionDecisionReason: 'Error processing request',
         },
