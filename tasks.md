@@ -2,8 +2,8 @@
 
 ## Current Sprint: Phase 0 - POC
 
-### In Progress
-- [~] **P0** Verify POC hook server works with actual Claude Code hooks
+### Done (Phase 0)
+- [x] **P0** Verify POC hook server works with actual Claude Code hooks
 
 ### Todo
 
