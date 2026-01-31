@@ -1,0 +1,25 @@
+{
+  "name": "claude-bridge",
+  "version": "0.1.0",
+  "description": "Telegram-controlled agent that orchestrates Claude Code sessions via a Front-end AI",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "poc:server": "tsx src/poc/hook-server.ts",
+    "poc:test": "tsx src/poc/test-hook.ts"
+  },
+  "keywords": ["claude", "telegram", "ai", "agent"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "fastify": "^5.0.0"
+  }
+}
