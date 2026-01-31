@@ -22,8 +22,11 @@ interface HookPayload {
 }
 
 interface HookResponse {
-  decision: 'allow' | 'deny';
-  reason?: string;
+  hookSpecificOutput: {
+    hookEventName: string;
+    permissionDecision: 'allow' | 'deny' | 'ask';
+    permissionDecisionReason?: string;
+  };
 }
 
 async function main() {
@@ -108,13 +111,25 @@ async function main() {
     // Auto-allow safe tools
     if (AUTO_ALLOW_TOOLS.includes(payload.tool_name)) {
       console.log(`[${id}] Auto-allowing safe tool: ${payload.tool_name}`);
-      return { decision: 'allow', reason: 'Auto-allowed safe tool' };
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          permissionDecision: 'allow',
+          permissionDecisionReason: 'Auto-allowed safe tool',
+        },
+      };
     }
 
     // Check if bot is connected
     if (!bot.getChatId()) {
       console.log(`[${id}] No Telegram chat connected. Denying by default.`);
-      return { decision: 'deny', reason: 'No Telegram chat connected' };
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          permissionDecision: 'deny',
+          permissionDecisionReason: 'No Telegram chat connected',
+        },
+      };
     }
 
     try {
@@ -130,14 +145,24 @@ async function main() {
       console.log(`[${id}] Decision: ${decision}`);
 
       const response: HookResponse = {
-        decision,
-        reason: decision === 'allow' ? 'Approved via Telegram' : 'Denied via Telegram',
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          permissionDecision: decision,
+          permissionDecisionReason:
+            decision === 'allow' ? 'Approved via Telegram' : 'Denied via Telegram',
+        },
       };
 
       return response;
     } catch (err) {
       console.error(`[${id}] Error:`, err);
-      return { decision: 'deny', reason: 'Error processing request' };
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          permissionDecision: 'deny',
+          permissionDecisionReason: 'Error processing request',
+        },
+      };
     }
   });
 
@@ -148,7 +173,12 @@ async function main() {
 
     // For now, allow all pre-tool-use requests
     // This can be extended with auto-approve rules
-    return { decision: 'allow' };
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+      },
+    };
   });
 
   // Save chat ID endpoint (called when /start is used)
