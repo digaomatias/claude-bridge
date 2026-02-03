@@ -9,6 +9,9 @@
 #   curl -fsSL https://raw.githubusercontent.com/digaomatias/claude-bridge/main/install-remote.sh | bash -s -- --version v0.1.0
 #
 
+# Wrap in a function so bash reads the entire script before executing.
+# This allows exec < /dev/tty to work safely with curl | bash.
+main() {
 set -e
 
 # Reconnect stdin to terminal so interactive prompts work with curl | bash
@@ -331,3 +334,8 @@ echo "  2. Open Telegram, message your bot"
 echo "  3. Send /start to connect"
 echo "  4. Use /spawn <task> to start coding!"
 echo ""
+}
+
+# Run main — the function wrapper ensures bash reads the entire script
+# before executing, so exec < /dev/tty won't interrupt script parsing.
+main "$@"
