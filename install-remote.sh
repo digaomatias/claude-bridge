@@ -11,6 +11,9 @@
 
 set -e
 
+# Reconnect stdin to terminal so interactive prompts work with curl | bash
+exec < /dev/tty
+
 # Configuration
 REPO_OWNER="digaomatias"
 REPO_NAME="claude-bridge"
@@ -122,7 +125,7 @@ echo -e "${YELLOW}Installing ClaudeBridge...${NC}"
 
 if [ -d "$INSTALL_DIR" ]; then
     echo -e "${YELLOW}Existing installation found at $INSTALL_DIR${NC}"
-    read -p "Update existing installation? (y/n) " -n 1 -r < /dev/tty
+    read -p "Update existing installation? (y/n) " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         echo "Installation cancelled."
@@ -160,7 +163,7 @@ if [ ! -f "$ENV_FILE" ]; then
     echo "  3. Copy the token"
     echo ""
 
-    read -p "Enter Telegram Bot Token (or press Enter to skip): " BOT_TOKEN < /dev/tty
+    read -p "Enter Telegram Bot Token (or press Enter to skip): " BOT_TOKEN
 
     if [ -n "$BOT_TOKEN" ] && ! echo "$BOT_TOKEN" | grep -qE '^[0-9]+:[A-Za-z0-9_-]+$'; then
         echo -e "${RED}Invalid token format. Expected format: 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11${NC}"
