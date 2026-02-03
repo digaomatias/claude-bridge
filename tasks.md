@@ -12,6 +12,19 @@
 - [x] **P1** Add timeout handling for approval requests
 - [x] **P2** Add request ID correlation
 
+### Done (Security Hardening)
+- [x] **P0** Telegram bot user authentication (ALLOWED_CHAT_IDS + first-claim)
+- [x] **P0** Config file permission hardening (0700 dir, 0600 file)
+- [x] **P0** Shell script injection fix (node -e blocks use process.env)
+- [x] **P1** Add `--` before task arg in session-manager (flag injection prevention)
+- [x] **P1** Input length limit on /spawn (2000 chars)
+- [x] **P1** Bot token format validation in install scripts
+- [x] **P1** LOG_LEVEL support with logger utility (suppress sensitive data)
+- [x] **P1** .gitignore: add config.json rule
+- [x] **P1** LICENSE file (MIT)
+- [x] **P1** README: Security section, ALLOWED_CHAT_IDS and LOG_LEVEL docs
+- [x] **P1** package.json: repository field, author
+
 ### In Progress
 - [~] **P1** Test full Telegram approval flow with real Claude Code
 

@@ -10,23 +10,26 @@
 
 import Fastify from 'fastify';
 import { TelegramBot } from './telegram/bot.js';
-import { loadConfig, saveConfig, getConfigPath } from './core/config.js';
+import { loadConfig, saveConfig, getConfigPath, logger } from './core/config.js';
+import {
+  HookPayload,
+  PostToolHookPayload,
+  HookResponse,
+  AskUserQuestionInput,
+} from './core/types.js';
 
-interface HookPayload {
-  session_id: string;
-  transcript_path: string;
-  cwd: string;
-  hook_event_name: string;
-  tool_name: string;
-  tool_input: Record<string, unknown>;
-}
+// Rolling buffer for console output (for /status command)
+const consoleBuffer: string[] = [];
+const MAX_CONSOLE_LINES = 50;
 
-interface HookResponse {
-  hookSpecificOutput: {
-    hookEventName: string;
-    permissionDecision: 'allow' | 'deny' | 'ask';
-    permissionDecisionReason?: string;
-  };
+function logToBuffer(message: string) {
+  const timestamp = new Date().toLocaleTimeString();
+  const line = `[${timestamp}] ${message}`;
+  consoleBuffer.push(line);
+  if (consoleBuffer.length > MAX_CONSOLE_LINES) {
+    consoleBuffer.shift();
+  }
+  console.log(message);
 }
 
 async function main() {
@@ -55,11 +58,16 @@ async function main() {
     process.exit(1);
   }
 
-  // Initialize Telegram bot with persistence callback
-  const bot = new TelegramBot(config.telegramBotToken, (chatId) => {
-    // Save chat ID to config when it changes
-    saveConfig({ telegramChatId: chatId });
-  });
+  // Initialize Telegram bot with persistence callback and console output getter
+  const bot = new TelegramBot(
+    config.telegramBotToken,
+    (chatId) => {
+      // Save chat ID to config when it changes
+      saveConfig({ telegramChatId: chatId });
+    },
+    () => consoleBuffer.slice(), // Return copy of buffer
+    () => process.cwd() // Default working directory for sessions
+  );
 
   // Restore saved chat ID if available
   if (config.telegramChatId) {
@@ -94,8 +102,8 @@ async function main() {
   });
 
   // Tools that are safe to auto-allow (not destructive)
+  // Note: AskUserQuestion is handled specially - we intercept it to build proper Telegram UI
   const AUTO_ALLOW_TOOLS = [
-    'AskUserQuestion',  // Just asking questions, not taking actions
     'Read',             // Reading files is safe
     'Glob',             // Searching files is safe
     'Grep',             // Searching content is safe
@@ -109,11 +117,33 @@ async function main() {
     const id = `req-${++requestCounter}`;
     const payload = request.body;
 
-    console.log(`\n[${id}] Permission request: ${payload.tool_name}`);
+    logToBuffer(`[${id}] Permission request: ${payload.tool_name}`);
+
+    // Special handling for AskUserQuestion - intercept and send to Telegram
+    if (payload.tool_name === 'AskUserQuestion') {
+      logToBuffer(`[${id}] Intercepting AskUserQuestion for Telegram UI`);
+
+      const input = payload.tool_input as unknown as AskUserQuestionInput;
+      const questions = input?.questions || [];
+
+      if (questions.length > 0 && bot.getChatId()) {
+        // Store pending question and send to Telegram
+        await bot.handleAskUserQuestion(id, questions, payload.cwd);
+      }
+
+      // Allow the tool to proceed - the TUI will appear but we'll answer via PTY
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'allow',
+          permissionDecisionReason: 'AskUserQuestion intercepted for Telegram',
+        },
+      };
+    }
 
     // Auto-allow safe tools
     if (AUTO_ALLOW_TOOLS.includes(payload.tool_name)) {
-      console.log(`[${id}] Auto-allowing safe tool: ${payload.tool_name}`);
+      logToBuffer(`[${id}] Auto-allowing safe tool: ${payload.tool_name}`);
       return {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -123,9 +153,22 @@ async function main() {
       };
     }
 
+    // Check if auto-approve mode is enabled
+    if (bot.isAutoApproveMode()) {
+      bot.incrementAutoApproveCount();
+      logToBuffer(`[${id}] ⚡ Auto-approved: ${payload.tool_name}`);
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'allow',
+          permissionDecisionReason: 'Auto-approved (Allow All mode)',
+        },
+      };
+    }
+
     // Check if bot is connected
     if (!bot.getChatId()) {
-      console.log(`[${id}] No Telegram chat connected. Denying by default.`);
+      logToBuffer(`[${id}] No Telegram chat connected. Denying by default.`);
       return {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -145,7 +188,7 @@ async function main() {
         payload.cwd
       );
 
-      console.log(`[${id}] Decision: ${decision}`);
+      logToBuffer(`[${id}] Decision: ${decision}`);
 
       const response: HookResponse = {
         hookSpecificOutput: {
@@ -184,6 +227,26 @@ async function main() {
     };
   });
 
+  // Post-tool-use hook - track completed actions
+  app.post<{ Body: PostToolHookPayload }>('/hook/post-tool', async (request) => {
+    const payload = request.body;
+
+    // Record the action with the bot (matched by cwd)
+    bot.recordAction({
+      toolName: payload.tool_name,
+      toolInput: payload.tool_input,
+      cwd: payload.cwd,
+      sessionId: payload.session_id,
+      timestamp: new Date(),
+      success: !payload.error,
+      error: payload.error,
+    });
+
+    logToBuffer(`[post-tool] ${payload.tool_name} in ${payload.cwd}`);
+
+    return { ok: true };
+  });
+
   // Save chat ID endpoint (called when /start is used)
   app.post<{ Body: { chatId: string } }>('/config/chat-id', async (request) => {
     const { chatId } = request.body;
@@ -201,9 +264,14 @@ async function main() {
 ║  HTTP Server: http://${config.serverHost}:${config.serverPort}                       ║
 ║  Telegram Bot: ${bot.getChatId() ? 'Connected (' + bot.getChatId() + ')' : 'Waiting for /start...'}
 ║                                                            ║
+║  Telegram Commands:                                        ║
+║    /status    - Show mode, pending requests, output        ║
+║    /allowall  - Enable auto-approve mode                   ║
+║    /stopallow - Disable auto-approve mode                  ║
+║                                                            ║
 ║  Endpoints:                                                ║
-║    POST /hook/permission  - Claude Code permission hook    ║
-║    POST /hook/pretool     - Pre-tool-use hook              ║
+║    POST /hook/permission  - Permission request hook        ║
+║    POST /hook/post-tool   - Post-tool action tracking      ║
 ║    GET  /health           - Health check                   ║
 ╚════════════════════════════════════════════════════════════╝
 `);
@@ -215,6 +283,8 @@ async function main() {
   // Handle graceful shutdown
   const shutdown = async () => {
     console.log('\nShutting down...');
+    // Kill all PTY sessions
+    bot.getSessionManager().killAll();
     await bot.stop();
     await app.close();
     process.exit(0);

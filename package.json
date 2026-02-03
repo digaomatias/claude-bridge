@@ -4,6 +4,10 @@
   "description": "Telegram-controlled agent that orchestrates Claude Code sessions via a Front-end AI",
   "type": "module",
   "main": "dist/index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/digaomatias/claude-bridge.git"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/server.ts",
@@ -18,7 +22,7 @@
     "ai",
     "agent"
   ],
-  "author": "",
+  "author": "digaomatias",
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -29,6 +33,8 @@
   "dependencies": {
     "dotenv": "^17.2.3",
     "fastify": "^5.0.0",
-    "grammy": "^1.39.3"
+    "grammy": "^1.39.3",
+    "node-pty": "^1.2.0-beta.10",
+    "sharp": "^0.34.5"
   }
 }

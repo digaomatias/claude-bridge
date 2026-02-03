@@ -34,6 +34,9 @@ npm install
 
 # Set your bot token
 export TELEGRAM_BOT_TOKEN="your-token-here"
+
+# Optional: restrict access to your Telegram chat ID
+export ALLOWED_CHAT_IDS="your-chat-id"
 ```
 
 ### 3. Start the Server
@@ -65,6 +68,17 @@ Add to `~/.claude/settings.json`:
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -X POST http://localhost:3847/hook/post-tool -H 'Content-Type: application/json' -d @-"
+          }
+        ]
+      }
     ]
   }
 }
@@ -85,16 +99,28 @@ Add to `~/.claude/settings.json`:
 |---------|-------------|
 | `npm run server` | Start the main server (Telegram + hooks) |
 | `npm run dev` | Start with auto-reload (development) |
-| `npm run poc:server` | POC server (manual stdin approval) |
-| `npm run poc:test` | Test hook communication |
+| `npm run build` | Build TypeScript to dist/ |
+| `npm start` | Run built server from dist/ |
 
 ### Telegram Commands
 
 | Command | Description |
 |---------|-------------|
 | `/start` | Connect this chat to ClaudeBridge |
-| `/status` | Show pending approval requests |
-| `/help` | Show help |
+| `/status` | Show mode, pending requests, recent output |
+| `/help` | Show available commands |
+| `/spawn <task>` | Start a new Claude Code session |
+| `/spawn --cwd /path <task>` | Start session in specific directory |
+| `/sessions` | List active sessions |
+| `/kill <id>` | Kill a session |
+| `/context [lines]` | Show recent output from active session |
+| `/screenshot` | Capture terminal screenshot of active session |
+| `/input <text>` | Send text input to active session |
+| `/keys <keys>` | Send keystrokes (e.g., `enter`, `y enter`) |
+| `/actions` | Show recent tool actions |
+| `/folders` | Manage recent project folders |
+| `/allowall` | Enable auto-approve mode |
+| `/stopallow` | Disable auto-approve mode |
 
 ## Configuration
 
@@ -104,15 +130,41 @@ Configuration can be set via environment variables or `~/.claude-bridge/config.j
 |----------|-------------|---------|
 | `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather | (required) |
 | `TELEGRAM_CHAT_ID` | Pre-configured chat ID | (from /start) |
+| `ALLOWED_CHAT_IDS` | Comma-separated list of authorized Telegram chat IDs | (none — first /start claims) |
 | `PORT` | Server port | 3847 |
 | `HOST` | Server host | 127.0.0.1 |
+| `LOG_LEVEL` | Log verbosity: `debug`, `info`, `warn`, `error` | info |
+
+## Security
+
+### Bot Authentication
+
+By default, the **first user** to send `/start` claims the bot. Once claimed, no other user can take control. To explicitly restrict access:
+
+```bash
+export ALLOWED_CHAT_IDS="123456789,987654321"
+```
+
+When `ALLOWED_CHAT_IDS` is set, only those chat IDs can interact with the bot. All commands and callback queries from unauthorized users are silently rejected.
+
+**Recommendation:** Always set `ALLOWED_CHAT_IDS` in production to prevent unauthorized access if someone discovers your bot's username.
+
+### Config File Permissions
+
+The config file at `~/.claude-bridge/config.json` (which stores your bot token) is written with restrictive permissions:
+- Directory: `0700` (owner-only access)
+- File: `0600` (owner-only read/write)
+
+### Logging
+
+At the default `info` log level, sensitive data (tool inputs, keystrokes, task descriptions) is suppressed. Set `LOG_LEVEL=debug` only during development.
 
 ## Development Phases
 
 - [x] Phase 0: POC - Hook bidirectional communication
 - [x] Phase 1: Basic Approval Bridge (Telegram integration)
 - [ ] Phase 2: Front-end AI Integration
-- [ ] Phase 3: Session Management
+- [ ] Phase 3: Session Management (enhanced)
 - [ ] Phase 4: Polish & Robustness
 
 ## Project Structure
@@ -120,21 +172,25 @@ Configuration can be set via environment variables or `~/.claude-bridge/config.j
 ```
 claude-bridge/
 ├── src/
-│   ├── index.ts           # Usage information
-│   ├── server.ts          # Main server (Phase 1+)
+│   ├── index.ts              # Usage information
+│   ├── server.ts             # Main server (Fastify + Telegram)
 │   ├── core/
-│   │   └── config.ts      # Configuration management
+│   │   ├── config.ts         # Configuration & logger
+│   │   ├── session-manager.ts # PTY session management
+│   │   ├── output-parser.ts  # Terminal output parsing
+│   │   └── types.ts          # Shared type definitions
 │   ├── telegram/
-│   │   └── bot.ts         # Telegram bot (grammY)
-│   ├── poc/               # Phase 0 POC code
-│   │   ├── hook-server.ts
-│   │   └── test-hook.ts
-│   └── hooks/             # Hook handling (future)
-├── hooks/
-│   └── claude-hooks.json  # Example hook config
-├── .env.example           # Environment template
+│   │   └── bot.ts            # Telegram bot (grammY)
+│   └── poc/                  # Phase 0 POC code
+│       ├── hook-server.ts
+│       └── test-hook.ts
+├── install.sh                # Local installer
+├── install-remote.sh         # Remote SSH installer
+├── uninstall.sh              # Uninstaller
+├── .env.example              # Environment template
 ├── package.json
 ├── tsconfig.json
+├── LICENSE
 └── README.md
 ```
 
