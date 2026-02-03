@@ -26,10 +26,39 @@ Permission requests from Claude Code are forwarded to Telegram with Approve/Deny
 2. Send `/newbot` and follow the prompts
 3. Copy the bot token you receive
 
-### 2. Install & Configure
+### 2. Install
+
+#### One-Line Remote Install (Recommended)
 
 ```bash
-cd ~/source/claude-bridge
+curl -fsSL https://raw.githubusercontent.com/digaomatias/claude-bridge/main/install-remote.sh | bash
+```
+
+This will:
+- Clone the repo to `~/.claude-bridge`
+- Install dependencies and build
+- Prompt for your Telegram bot token
+- Configure Claude Code hooks automatically
+- Create a `claude-bridge` launcher in `~/.local/bin`
+
+After installation, start with:
+
+```bash
+claude-bridge
+```
+
+To update or uninstall later:
+
+```bash
+claude-bridge update
+claude-bridge uninstall
+```
+
+#### Manual Install
+
+```bash
+git clone https://github.com/digaomatias/claude-bridge.git
+cd claude-bridge
 npm install
 
 # Set your bot token
@@ -42,6 +71,10 @@ export ALLOWED_CHAT_IDS="your-chat-id"
 ### 3. Start the Server
 
 ```bash
+# If installed via one-line installer:
+claude-bridge
+
+# If installed manually:
 npm run server
 ```
 
