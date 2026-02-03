@@ -86,6 +86,8 @@ npm run server
 
 ### 5. Configure Claude Code Hooks
 
+> **Note:** The one-line installer configures hooks automatically. This section is only needed for manual installs.
+
 Add to `~/.claude/settings.json`:
 
 ```json
