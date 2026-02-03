@@ -135,10 +135,38 @@ if [ -d "$INSTALL_DIR" ]; then
         echo "Installation cancelled."
         exit 0
     fi
-    cd "$INSTALL_DIR"
-    git fetch origin
-    git checkout "$BRANCH"
-    git pull origin "$BRANCH"
+
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        # Existing git clone — pull updates
+        cd "$INSTALL_DIR"
+        git fetch origin
+        git checkout "$BRANCH"
+        git pull origin "$BRANCH"
+    else
+        # Directory exists but isn't a git repo (e.g. config-only)
+        # Back up any existing config, clone fresh, restore config
+        echo -e "${YELLOW}Not a git repo — performing fresh install...${NC}"
+        BACKUP_DIR=$(mktemp -d)
+        if [ -f "$INSTALL_DIR/config.json" ]; then
+            cp "$INSTALL_DIR/config.json" "$BACKUP_DIR/config.json"
+        fi
+        if [ -f "$INSTALL_DIR/.env" ]; then
+            cp "$INSTALL_DIR/.env" "$BACKUP_DIR/.env"
+        fi
+        rm -rf "$INSTALL_DIR"
+        git clone --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
+        # Restore backed-up files
+        if [ -f "$BACKUP_DIR/config.json" ]; then
+            cp "$BACKUP_DIR/config.json" "$INSTALL_DIR/config.json"
+            echo -e "${GREEN}✓ Restored config.json${NC}"
+        fi
+        if [ -f "$BACKUP_DIR/.env" ]; then
+            cp "$BACKUP_DIR/.env" "$INSTALL_DIR/.env"
+            echo -e "${GREEN}✓ Restored .env${NC}"
+        fi
+        rm -rf "$BACKUP_DIR"
+        cd "$INSTALL_DIR"
+    fi
 else
     echo "Cloning from $REPO_URL..."
     git clone --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
