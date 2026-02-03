@@ -15,7 +15,8 @@ main() {
 set -e
 
 # Reconnect stdin to terminal so interactive prompts work with curl | bash
-exec < /dev/tty
+# Falls through gracefully in non-interactive environments (CI, etc.)
+{ exec < /dev/tty; } 2>/dev/null || true
 
 # Configuration
 REPO_OWNER="digaomatias"
