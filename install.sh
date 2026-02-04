@@ -161,13 +161,35 @@ setup_hooks() {
     HOOKS_JSON=$(cat << 'HOOKEOF'
 {
   "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -X POST http://localhost:3847/hook/permission -H 'Content-Type: application/json' -d @-"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Edit|Write|AskUserQuestion",
+        "matcher": "Bash|Edit|Write",
         "hooks": [
           {
             "type": "command",
             "command": "curl -s -X POST http://localhost:3847/hook/pretool -H 'Content-Type: application/json' -d @-"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -X POST http://localhost:3847/hook/post-tool -H 'Content-Type: application/json' -d @-"
           }
         ]
       }
@@ -204,15 +226,18 @@ HOOKEOF
 
                 // Merge hooks
                 if (!existing.hooks) existing.hooks = {};
-                if (!existing.hooks.PreToolUse) existing.hooks.PreToolUse = [];
 
-                // Check if our hook already exists
-                const hasHook = existing.hooks.PreToolUse.some(h =>
+                // Check if our hooks already exist
+                const hasHook = (hookType) => existing.hooks[hookType]?.some(h =>
                     h.hooks?.some(hh => hh.command?.includes("localhost:3847"))
                 );
 
-                if (!hasHook) {
-                    existing.hooks.PreToolUse.push(...newHooks.hooks.PreToolUse);
+                // Add each hook type if not present
+                for (const [hookType, hookConfigs] of Object.entries(newHooks.hooks)) {
+                    if (!existing.hooks[hookType]) existing.hooks[hookType] = [];
+                    if (!hasHook(hookType)) {
+                        existing.hooks[hookType].push(...hookConfigs);
+                    }
                 }
 
                 fs.writeFileSync(settingsPath, JSON.stringify(existing, null, 2));

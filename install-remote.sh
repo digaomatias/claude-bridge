@@ -219,39 +219,56 @@ echo ""
 echo -e "${YELLOW}Setting up Claude Code hooks...${NC}"
 mkdir -p "$HOME/.claude"
 
-HOOK_COMMAND='curl -s -X POST http://localhost:3847/hook/pretool -H '\''Content-Type: application/json'\'' -d @-'
-
 if [ -f "$CLAUDE_SETTINGS" ]; then
-    if grep -q "localhost:3847" "$CLAUDE_SETTINGS" 2>/dev/null; then
+    if grep -q "localhost:3847/hook/permission" "$CLAUDE_SETTINGS" 2>/dev/null; then
         echo -e "${GREEN}✓ Hooks already configured${NC}"
     else
         # Backup and merge
         cp "$CLAUDE_SETTINGS" "$CLAUDE_SETTINGS.backup"
 
-        CLAUDE_SETTINGS="$CLAUDE_SETTINGS" HOOK_COMMAND="$HOOK_COMMAND" node -e '
+        CLAUDE_SETTINGS="$CLAUDE_SETTINGS" node -e '
         const fs = require("fs");
         const settingsPath = process.env.CLAUDE_SETTINGS;
-        const hookCommand = process.env.HOOK_COMMAND;
         let settings = {};
         try {
             settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
         } catch(e) {}
 
         if (!settings.hooks) settings.hooks = {};
-        if (!settings.hooks.PreToolUse) settings.hooks.PreToolUse = [];
 
-        const hasHook = settings.hooks.PreToolUse.some(h =>
+        const newHooks = {
+            PermissionRequest: [{
+                matcher: "",
+                hooks: [{
+                    type: "command",
+                    command: "curl -s -X POST http://localhost:3847/hook/permission -H '\''Content-Type: application/json'\'' -d @-"
+                }]
+            }],
+            PreToolUse: [{
+                matcher: "Bash|Edit|Write",
+                hooks: [{
+                    type: "command",
+                    command: "curl -s -X POST http://localhost:3847/hook/pretool -H '\''Content-Type: application/json'\'' -d @-"
+                }]
+            }],
+            PostToolUse: [{
+                matcher: "",
+                hooks: [{
+                    type: "command",
+                    command: "curl -s -X POST http://localhost:3847/hook/post-tool -H '\''Content-Type: application/json'\'' -d @-"
+                }]
+            }]
+        };
+
+        const hasHook = (hookType) => settings.hooks[hookType]?.some(h =>
             h.hooks?.some(hh => hh.command?.includes("localhost:3847"))
         );
 
-        if (!hasHook) {
-            settings.hooks.PreToolUse.push({
-                matcher: "Bash|Edit|Write|AskUserQuestion",
-                hooks: [{
-                    type: "command",
-                    command: hookCommand
-                }]
-            });
+        for (const [hookType, hookConfigs] of Object.entries(newHooks)) {
+            if (!settings.hooks[hookType]) settings.hooks[hookType] = [];
+            if (!hasHook(hookType)) {
+                settings.hooks[hookType].push(...hookConfigs);
+            }
         }
 
         fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
@@ -259,16 +276,38 @@ if [ -f "$CLAUDE_SETTINGS" ]; then
         echo -e "${GREEN}✓ Hooks added (backup: $CLAUDE_SETTINGS.backup)${NC}"
     fi
 else
-    cat > "$CLAUDE_SETTINGS" << EOF
+    cat > "$CLAUDE_SETTINGS" << 'EOF'
 {
   "hooks": {
-    "PreToolUse": [
+    "PermissionRequest": [
       {
-        "matcher": "Bash|Edit|Write|AskUserQuestion",
+        "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "$HOOK_COMMAND"
+            "command": "curl -s -X POST http://localhost:3847/hook/permission -H 'Content-Type: application/json' -d @-"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -X POST http://localhost:3847/hook/pretool -H 'Content-Type: application/json' -d @-"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -X POST http://localhost:3847/hook/post-tool -H 'Content-Type: application/json' -d @-"
           }
         ]
       }
