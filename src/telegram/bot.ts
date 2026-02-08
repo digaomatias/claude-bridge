@@ -20,8 +20,11 @@ import {
   removeRecentFolder,
   clearRecentFolders,
   loadConfig,
+  saveConfig,
   logger,
 } from '../core/config.js';
+import type { Interpreter } from '../ai/interpreter.js';
+import type { AIAction, ObservationCallbacks } from '../ai/types.js';
 
 import sharp from 'sharp';
 
@@ -139,16 +142,21 @@ export class TelegramBot {
   // Track if we're waiting for custom folder path input
   private pendingSpawnCustomPath = false;
 
+  // AI interpreter (optional)
+  private interpreter: Interpreter | null = null;
+
   constructor(
     token: string,
     onChatIdChange?: ChatIdCallback,
     getConsoleOutput?: GetConsoleOutputCallback,
-    getDefaultCwd?: GetDefaultCwdCallback
+    getDefaultCwd?: GetDefaultCwdCallback,
+    interpreter?: Interpreter | null
   ) {
     this.bot = new Bot(token);
     this.onChatIdChange = onChatIdChange || null;
     this.getConsoleOutput = getConsoleOutput || null;
     this.getDefaultCwd = getDefaultCwd || null;
+    this.interpreter = interpreter || null;
     this.sessionManager = new SessionManager();
 
     // Load allowed chat IDs from config
@@ -209,6 +217,180 @@ export class TelegramBot {
 
   getSessionManager(): SessionManager {
     return this.sessionManager;
+  }
+
+  /**
+   * Set or replace the AI interpreter at runtime.
+   */
+  setInterpreter(interpreter: Interpreter | null): void {
+    this.interpreter = interpreter;
+  }
+
+  /**
+   * Get the current AI interpreter.
+   */
+  getInterpreter(): Interpreter | null {
+    return this.interpreter;
+  }
+
+  /**
+   * Build observation callbacks for the AI interpreter's observation tools.
+   * These allow the AI to read terminal output, send keys, and list sessions.
+   */
+  buildObservationCallbacks(): ObservationCallbacks {
+    return {
+      getTerminalOutput: (sessionId: string, lines = 50) => {
+        const context = this.sessionManager.getContext(sessionId, lines);
+        return context
+          .map(line => cleanTerminalOutput(line))
+          .filter(l => l.length > 0)
+          .join('\n')
+          .slice(0, 3500);
+      },
+      sendKeys: (sessionId: string, keys: string) => {
+        return this.sessionManager.sendInput(sessionId, keys);
+      },
+      listSessions: () => {
+        return this.sessionManager.listSessions().map(s => ({
+          id: s.id,
+          status: s.status,
+          task: s.task || '',
+          cwd: s.cwd,
+          ageMinutes: Math.round((Date.now() - s.createdAt.getTime()) / 1000 / 60),
+          isActive: s.id === this.activeSessionId,
+        }));
+      },
+    };
+  }
+
+  /**
+   * Build interpretation context from current session state.
+   */
+  private buildInterpretationContext(): import('../ai/types.js').InterpretationContext {
+    const activeSession = this.activeSessionId
+      ? this.sessionManager.getSession(this.activeSessionId)
+      : null;
+
+    // Get recent output from active session (last 10 lines)
+    let recentOutput: string[] = [];
+    if (activeSession) {
+      recentOutput = activeSession.buffer
+        .slice(-10)
+        .map(line => cleanTerminalOutput(line))
+        .filter(line => line.length > 0);
+    }
+
+    // Check if there's a pending question
+    let hasPendingQuestion = false;
+    if (activeSession) {
+      for (const pending of this.pendingQuestions.values()) {
+        if (pending.sessionCwd === activeSession.cwd) {
+          hasPendingQuestion = true;
+          break;
+        }
+      }
+    }
+
+    return {
+      hasActiveSession: !!activeSession && activeSession.status !== 'completed',
+      activeSessionId: this.activeSessionId,
+      activeSessionCwd: activeSession?.cwd || null,
+      activeSessionTask: activeSession?.task || null,
+      activeSessionStatus: activeSession?.status || null,
+      recentOutput,
+      recentFolders: getRecentFolders(),
+      hasPendingQuestion,
+      sessionCount: this.sessionManager.getActiveSessions().length,
+    };
+  }
+
+  /**
+   * Handle an AI action by routing to the appropriate handler.
+   */
+  private async handleAIAction(
+    ctx: Context,
+    action: AIAction,
+    originalText: string
+  ): Promise<void> {
+    switch (action.type) {
+      case 'spawn': {
+        const task = action.task;
+        const permissionMode = (action.permissionMode as PermissionMode) || 'default';
+
+        if (action.cwd) {
+          const cwdPath = expandPath(action.cwd);
+          const fs = await import('fs');
+          if (fs.existsSync(cwdPath) && fs.statSync(cwdPath).isDirectory()) {
+            await this.executeSpawn(ctx, task, cwdPath, permissionMode);
+          } else {
+            // CWD doesn't exist, show folder selection instead
+            await this.showFolderSelection(ctx, task, permissionMode);
+          }
+        } else {
+          await this.showFolderSelection(ctx, task, permissionMode);
+        }
+        break;
+      }
+
+      case 'send_to_session': {
+        if (this.activeSessionId) {
+          const success = this.sessionManager.sendInput(
+            this.activeSessionId,
+            action.text + '\r\r'
+          );
+          if (success) {
+            await ctx.react('\uD83D\uDC4D');
+          } else {
+            await ctx.reply('\u274C Failed to send to session.');
+          }
+        } else {
+          await ctx.reply(
+            '\u274C No active session. Use `/spawn` to start one.',
+            { parse_mode: 'Markdown' }
+          );
+        }
+        break;
+      }
+
+      case 'reply_directly': {
+        await ctx.reply(action.text);
+        break;
+      }
+
+      case 'clarify': {
+        await ctx.reply(action.question);
+        break;
+      }
+
+      case 'passthrough': {
+        // Fall through to legacy handling
+        await this.handleLegacyText(ctx, originalText);
+        break;
+      }
+    }
+  }
+
+  /**
+   * Legacy text handling (pre-AI behavior).
+   * Sends text directly to the active session.
+   */
+  private async handleLegacyText(ctx: Context, text: string): Promise<void> {
+    if (!this.activeSessionId) {
+      await ctx.reply(
+        '\uD83D\uDCAC No active session to send text to.\n\n' +
+          'Use `/spawn <task>` to start one, or use commands like /help.',
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    const success = this.sessionManager.sendInput(this.activeSessionId, text + '\r\r');
+
+    if (success) {
+      await ctx.react('\uD83D\uDC4D');
+    } else {
+      await ctx.reply('\u274C Failed to send to session.');
+    }
   }
 
   /**
@@ -1093,6 +1275,10 @@ export class TelegramBot {
           `/context [lines] - Get terminal text output\n` +
           `/input <text> - Send raw text to session\n` +
           `/keys <key...> - Send keystrokes (see /keys help)\n\n` +
+          `*AI Commands:*\n` +
+          `/ai - Show AI interpreter status\n` +
+          `/ai on|off - Enable/disable AI\n` +
+          `/ai clear - Clear AI memory\n\n` +
           `*Other Commands:*\n` +
           `/status - Show current status\n` +
           `/actions [n] - Show completed actions\n` +
@@ -1100,7 +1286,7 @@ export class TelegramBot {
           `/allowall - Enable auto-approve mode\n` +
           `/stopallow - Disable auto-approve\n\n` +
           `*Interaction:*\n` +
-          `💬 Type text → sends to active session\n` +
+          `💬 Type text → AI interprets (if enabled)\n` +
           `🔘 Tap buttons → answer prompts\n\n` +
           `*Permission Modes:*\n` +
           `📋 Plan - Plans only, no execution\n` +
@@ -1362,6 +1548,107 @@ export class TelegramBot {
       message += `\`/folders remove <n>\` - Remove folder at index`;
 
       await ctx.reply(message, { parse_mode: 'Markdown' });
+    });
+
+    // /ai command - manage AI interpreter
+    this.bot.command('ai', async (ctx) => {
+      if (!this.isAuthorized(ctx)) return;
+      const args = ctx.message?.text?.replace(/^\/ai\s*/, '').trim().toLowerCase();
+
+      if (!args || args === 'status') {
+        // Show AI status
+        const config = loadConfig();
+        const aiConfig = config.ai;
+        if (!aiConfig || !aiConfig.enabled) {
+          await ctx.reply(
+            `\uD83E\uDD16 *AI Interpreter: Disabled*\n\n` +
+              `To enable, add an \`ai\` section to your config:\n` +
+              `\`~/.claude-bridge/config.json\`\n\n` +
+              `\`\`\`\n{\n  "ai": {\n    "enabled": true,\n    "provider": "openai",\n    "apiKey": "sk-..."\n  }\n}\n\`\`\``,
+            { parse_mode: 'Markdown' }
+          );
+        } else {
+          const model = aiConfig.model || (aiConfig.provider === 'openai' ? 'gpt-4o' : 'claude-sonnet-4-20250514');
+          const chatId = ctx.chat?.id?.toString() || '';
+          const stats = this.interpreter?.getMemoryStats(chatId);
+          let memoryLine = '';
+          if (stats && stats.messageCount > 0) {
+            memoryLine = `\nMemory: ${stats.messageCount} messages, ~${stats.estimatedTokens} tokens${stats.hasSummary ? ' [has summary]' : ''}`;
+          }
+          await ctx.reply(
+            `\uD83E\uDD16 *AI Interpreter: ${this.interpreter?.isAvailable() ? 'Active' : 'Configured but inactive'}*\n\n` +
+              `Provider: \`${aiConfig.provider}\`\n` +
+              `Model: \`${model}\`\n` +
+              `Temperature: ${aiConfig.temperature ?? 0.3}\n` +
+              `Max conversation messages: ${aiConfig.maxConversationMessages ?? 50}` +
+              memoryLine,
+            { parse_mode: 'Markdown' }
+          );
+        }
+        return;
+      }
+
+      if (args === 'on') {
+        const config = loadConfig();
+        if (!config.ai?.apiKey) {
+          await ctx.reply(
+            `\u274C Cannot enable AI: no API key configured.\n\n` +
+              `Add \`ai.apiKey\` to \`~/.claude-bridge/config.json\` first.`
+          );
+          return;
+        }
+        saveConfig({ ai: { ...config.ai, enabled: true } });
+        // Re-initialize interpreter
+        try {
+          const { Interpreter } = await import('../ai/interpreter.js');
+          const updatedConfig = loadConfig();
+          this.interpreter = new Interpreter(updatedConfig.ai!, this.buildObservationCallbacks());
+          await ctx.reply(`\u2705 AI interpreter enabled.`);
+        } catch (err) {
+          logger.error('[Bot] Failed to initialize AI interpreter:', err);
+          await ctx.reply(`\u274C Failed to initialize AI interpreter.`);
+        }
+        return;
+      }
+
+      if (args === 'off') {
+        const config = loadConfig();
+        if (config.ai) {
+          saveConfig({ ai: { ...config.ai, enabled: false } });
+        }
+        this.interpreter = null;
+        await ctx.reply(`\u2705 AI interpreter disabled. Messages will be sent directly to sessions.`);
+        return;
+      }
+
+      if (args === 'clear') {
+        const chatId = ctx.chat?.id?.toString() || '';
+        this.interpreter?.clearMemory(chatId);
+        await ctx.reply(`\u2705 AI conversation memory cleared.`);
+        return;
+      }
+
+      if (args === 'compact') {
+        if (!this.interpreter?.isAvailable()) {
+          await ctx.reply(`\u274C AI interpreter is not active.`);
+          return;
+        }
+        const chatId = ctx.chat?.id?.toString() || '';
+        const context = this.buildInterpretationContext();
+        const result = await this.interpreter.compactMemory(chatId, context);
+        await ctx.reply(result);
+        return;
+      }
+
+      await ctx.reply(
+        `\uD83E\uDD16 *AI Commands:*\n\n` +
+          `/ai - Show AI status\n` +
+          `/ai on - Enable AI interpreter\n` +
+          `/ai off - Disable AI interpreter\n` +
+          `/ai clear - Clear conversation memory\n` +
+          `/ai compact - Compact conversation memory`,
+        { parse_mode: 'Markdown' }
+      );
     });
 
     // /keys command - send specific keystrokes for testing TUI navigation
@@ -2000,27 +2287,17 @@ export class TelegramBot {
         }
       }
 
-      // Check if there's an active session
-      if (!this.activeSessionId) {
-        await ctx.reply(
-          `💬 No active session to send text to.\n\n` +
-            `Use \`/spawn <task>\` to start one, or use commands like /help.`,
-          { parse_mode: 'Markdown' }
-        );
+      // AI interpretation layer - if available, let AI decide the action
+      if (this.interpreter?.isAvailable()) {
+        const chatId = ctx.chat?.id?.toString() || '';
+        const context = this.buildInterpretationContext();
+        const action = await this.interpreter.interpret(chatId, text, context);
+        await this.handleAIAction(ctx, action, text);
         return;
       }
 
-      // Send the text to the active session
-      // Note: Double Enter because after task completion, Claude Code sometimes
-      // consumes the first Enter (to dismiss status/return to prompt)
-      const success = this.sessionManager.sendInput(this.activeSessionId, text + '\r\r');
-
-      if (success) {
-        // React with a checkmark to confirm
-        await ctx.react('👍');
-      } else {
-        await ctx.reply(`❌ Failed to send to session.`);
-      }
+      // Legacy handling (no AI) - send text directly to active session
+      await this.handleLegacyText(ctx, text);
     });
   }
 
@@ -2053,6 +2330,14 @@ export class TelegramBot {
   }
 
   /**
+   * Send a warning message to Telegram (fire-and-forget).
+   */
+  async sendWarning(text: string): Promise<void> {
+    if (!this.chatId) return;
+    await this.bot.api.sendMessage(this.chatId, text, { parse_mode: 'Markdown' });
+  }
+
+  /**
    * Send an approval request to Telegram and wait for user decision.
    */
   async requestApproval(
@@ -2060,7 +2345,8 @@ export class TelegramBot {
     sessionId: string,
     toolName: string,
     toolInput: Record<string, unknown>,
-    cwd: string
+    cwd: string,
+    escalationWarning?: string
   ): Promise<'allow' | 'deny'> {
     if (!this.chatId) {
       console.log('No chat ID configured. Defaulting to deny.');
@@ -2076,14 +2362,22 @@ export class TelegramBot {
       .text('❌ Deny', `deny:${id}`)
       .text('⚡ Allow All', `allowall:${id}`);
 
+    // Build message with optional escalation warning
+    let msgText =
+      `\uD83D\uDD10 *Permission Request*\n\n` +
+      `*Tool:* \`${toolName}\`\n` +
+      `*Directory:* \`${cwd}\`\n\n`;
+
+    if (escalationWarning) {
+      msgText += `${escalationWarning}\n\n`;
+    }
+
+    msgText += `${inputDisplay}\n\n` + `_Request ID: ${id}_`;
+
     // Send the approval request message
     const message = await this.bot.api.sendMessage(
       this.chatId,
-      `🔐 *Permission Request*\n\n` +
-        `*Tool:* \`${toolName}\`\n` +
-        `*Directory:* \`${cwd}\`\n\n` +
-        `${inputDisplay}\n\n` +
-        `_Request ID: ${id}_`,
+      msgText,
       {
         parse_mode: 'Markdown',
         reply_markup: keyboard,

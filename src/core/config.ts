@@ -7,6 +7,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import type { AIConfig, AutoApproveRule } from '../ai/types.js';
+
 export interface Config {
   telegramBotToken: string;
   telegramChatId: string | null;
@@ -15,6 +17,8 @@ export interface Config {
   serverHost: string;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   recentFolders: string[];
+  ai?: AIConfig;
+  autoApproveRules?: AutoApproveRule[];
 }
 
 const CONFIG_PATH = path.join(
