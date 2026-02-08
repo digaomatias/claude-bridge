@@ -237,18 +237,11 @@ if [ -f "$CLAUDE_SETTINGS" ]; then
         if (!settings.hooks) settings.hooks = {};
 
         const newHooks = {
-            PermissionRequest: [{
+            PreToolUse: [{
                 matcher: "",
                 hooks: [{
                     type: "command",
                     command: "curl -s -X POST http://localhost:3847/hook/permission -H '\''Content-Type: application/json'\'' -d @-"
-                }]
-            }],
-            PreToolUse: [{
-                matcher: "Bash|Edit|Write",
-                hooks: [{
-                    type: "command",
-                    command: "curl -s -X POST http://localhost:3847/hook/pretool -H '\''Content-Type: application/json'\'' -d @-"
                 }]
             }],
             PostToolUse: [{
@@ -279,24 +272,13 @@ else
     cat > "$CLAUDE_SETTINGS" << 'EOF'
 {
   "hooks": {
-    "PermissionRequest": [
+    "PreToolUse": [
       {
         "matcher": "",
         "hooks": [
           {
             "type": "command",
             "command": "curl -s -X POST http://localhost:3847/hook/permission -H 'Content-Type: application/json' -d @-"
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash|Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "curl -s -X POST http://localhost:3847/hook/pretool -H 'Content-Type: application/json' -d @-"
           }
         ]
       }

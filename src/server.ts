@@ -17,6 +17,9 @@ import {
   HookResponse,
   AskUserQuestionInput,
 } from './core/types.js';
+import { Interpreter } from './ai/interpreter.js';
+import { getDefaultRules, evaluateAutoApproveRules } from './ai/auto-approve.js';
+import { classifyEscalation, formatEscalationWarning } from './ai/escalation.js';
 
 // Rolling buffer for console output (for /status command)
 const consoleBuffer: string[] = [];
@@ -58,7 +61,7 @@ async function main() {
     process.exit(1);
   }
 
-  // Initialize Telegram bot with persistence callback and console output getter
+  // Initialize Telegram bot first (without interpreter)
   const bot = new TelegramBot(
     config.telegramBotToken,
     (chatId) => {
@@ -66,8 +69,22 @@ async function main() {
       saveConfig({ telegramChatId: chatId });
     },
     () => consoleBuffer.slice(), // Return copy of buffer
-    () => process.cwd() // Default working directory for sessions
+    () => process.cwd(), // Default working directory for sessions
+    null
   );
+
+  // Initialize AI interpreter (optional - disabled by default)
+  // Created after bot so we can pass observation callbacks
+  if (config.ai?.enabled && config.ai.apiKey) {
+    try {
+      const interpreter = new Interpreter(config.ai, bot.buildObservationCallbacks());
+      bot.setInterpreter(interpreter);
+      console.log(`AI interpreter enabled: ${config.ai.provider} (${config.ai.model || 'default model'})`);
+    } catch (err) {
+      console.warn('Failed to initialize AI interpreter:', err);
+      console.warn('Continuing without AI - messages will be sent directly to sessions.');
+    }
+  }
 
   // Restore saved chat ID if available
   if (config.telegramChatId) {
@@ -101,14 +118,10 @@ async function main() {
     };
   });
 
-  // Tools that are safe to auto-allow (not destructive)
-  // Note: AskUserQuestion is handled specially - we intercept it to build proper Telegram UI
-  const AUTO_ALLOW_TOOLS = [
-    'Read',             // Reading files is safe
-    'Glob',             // Searching files is safe
-    'Grep',             // Searching content is safe
-    'WebSearch',        // Web searches are safe
-    'WebFetch',         // Fetching web content is safe
+  // Build merged auto-approve rules: defaults + user-configured
+  const autoApproveRules = [
+    ...getDefaultRules(),
+    ...(config.autoApproveRules || []),
   ];
 
   // Permission request hook
@@ -141,22 +154,39 @@ async function main() {
       };
     }
 
-    // Auto-allow safe tools
-    if (AUTO_ALLOW_TOOLS.includes(payload.tool_name)) {
-      logToBuffer(`[${id}] Auto-allowing safe tool: ${payload.tool_name}`);
+    // Evaluate auto-approve rules (defaults + user-configured)
+    const matchedRule = evaluateAutoApproveRules(payload, autoApproveRules);
+    if (matchedRule) {
+      logToBuffer(`[${id}] Rule "${matchedRule.name}" matched: ${matchedRule.action} (${matchedRule.reason || 'no reason'})`);
       return {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
-          permissionDecision: 'allow',
-          permissionDecisionReason: 'Auto-allowed safe tool',
+          permissionDecision: matchedRule.action,
+          permissionDecisionReason: `Rule: ${matchedRule.name} - ${matchedRule.reason || matchedRule.action}`,
         },
       };
     }
 
+    // Classify escalation level for the operation
+    const escalation = classifyEscalation(payload);
+
     // Check if auto-approve mode is enabled
     if (bot.isAutoApproveMode()) {
       bot.incrementAutoApproveCount();
-      logToBuffer(`[${id}] ⚡ Auto-approved: ${payload.tool_name}`);
+      logToBuffer(`[${id}] Auto-approved: ${payload.tool_name}`);
+
+      // Even in auto-approve, warn about dangerous/critical operations
+      if (escalation.level === 'dangerous' || escalation.level === 'critical') {
+        const warning = formatEscalationWarning(escalation);
+        logToBuffer(`[${id}] ${warning}`);
+        // Fire-and-forget warning to Telegram
+        bot.sendWarning(
+          `${warning}\n\n` +
+          `*Tool:* \`${payload.tool_name}\`\n` +
+          `_Auto-approved in Allow All mode_`
+        ).catch(() => {});
+      }
+
       return {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -185,7 +215,8 @@ async function main() {
         payload.session_id,
         payload.tool_name,
         payload.tool_input,
-        payload.cwd
+        payload.cwd,
+        escalation.level !== 'safe' ? formatEscalationWarning(escalation) : undefined
       );
 
       logToBuffer(`[${id}] Decision: ${decision}`);
@@ -210,21 +241,6 @@ async function main() {
         },
       };
     }
-  });
-
-  // Pre-tool-use hook (optional, for filtering)
-  app.post<{ Body: HookPayload }>('/hook/pretool', async (request) => {
-    const payload = request.body;
-    console.log(`[pretool] ${payload.tool_name}`);
-
-    // For now, allow all pre-tool-use requests
-    // This can be extended with auto-approve rules
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'allow',
-      },
-    };
   });
 
   // Post-tool-use hook - track completed actions
