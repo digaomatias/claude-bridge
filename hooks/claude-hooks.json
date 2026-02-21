@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s -X POST http://localhost:3847/hook/permission -H 'Content-Type: application/json' -d @-"
+            "command": "curl -s -X POST http://localhost:3847/hook/permission -H 'Content-Type: application/json' -H \"Authorization: Bearer $(cat ~/.claude-bridge/.hook-secret)\" -d @-"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s -X POST http://localhost:3847/hook/post-tool -H 'Content-Type: application/json' -d @-"
+            "command": "curl -s -X POST http://localhost:3847/hook/post-tool -H 'Content-Type: application/json' -H \"Authorization: Bearer $(cat ~/.claude-bridge/.hook-secret)\" -d @-"
           }
         ]
       }

@@ -18,7 +18,7 @@ echo -e "${BLUE}╚════════════════════�
 echo ""
 
 echo -e "${YELLOW}This will remove:${NC}"
-echo "  - $INSTALL_DIR"
+echo "  - $INSTALL_DIR (including .hook-secret and audit.log)"
 echo "  - $LAUNCHER"
 echo "  - ClaudeBridge hooks from Claude Code settings"
 echo ""
@@ -39,22 +39,27 @@ if [ -f "$CLAUDE_SETTINGS" ]; then
         # Backup first
         cp "$CLAUDE_SETTINGS" "$CLAUDE_SETTINGS.backup.$(date +%Y%m%d%H%M%S)"
 
-        # Remove hooks using node
+        # Remove hooks using node (both PreToolUse and PostToolUse)
         CLAUDE_SETTINGS="$CLAUDE_SETTINGS" node -e '
         const fs = require("fs");
         const settingsPath = process.env.CLAUDE_SETTINGS;
         const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
 
-        if (settings.hooks && settings.hooks.PreToolUse) {
-            settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter(h =>
-                !h.hooks?.some(hh => hh.command?.includes("localhost:3847"))
-            );
-            if (settings.hooks.PreToolUse.length === 0) {
-                delete settings.hooks.PreToolUse;
+        const hookTypes = ["PreToolUse", "PostToolUse", "PermissionRequest"];
+
+        for (const hookType of hookTypes) {
+            if (settings.hooks && settings.hooks[hookType]) {
+                settings.hooks[hookType] = settings.hooks[hookType].filter(h =>
+                    !h.hooks?.some(hh => hh.command?.includes("localhost:3847"))
+                );
+                if (settings.hooks[hookType].length === 0) {
+                    delete settings.hooks[hookType];
+                }
             }
-            if (Object.keys(settings.hooks).length === 0) {
-                delete settings.hooks;
-            }
+        }
+
+        if (settings.hooks && Object.keys(settings.hooks).length === 0) {
+            delete settings.hooks;
         }
 
         fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));

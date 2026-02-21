@@ -8,9 +8,10 @@
  * Routes Claude Code permission requests to Telegram for approval.
  */
 
+import * as crypto from 'crypto';
 import Fastify from 'fastify';
 import { TelegramBot } from './telegram/bot.js';
-import { loadConfig, saveConfig, getConfigPath, logger } from './core/config.js';
+import { loadConfig, saveConfig, getConfigPath, getOrCreateHookSecret, getHookSecretPath, logger } from './core/config.js';
 import {
   HookPayload,
   PostToolHookPayload,
@@ -20,6 +21,8 @@ import {
 import { Interpreter } from './ai/interpreter.js';
 import { getDefaultRules, evaluateAutoApproveRules } from './ai/auto-approve.js';
 import { classifyEscalation, formatEscalationWarning } from './ai/escalation.js';
+import { AuditLogger, auditPermission, auditAuth } from './core/audit.js';
+import { RateLimiter } from './core/rate-limiter.js';
 
 // Rolling buffer for console output (for /status command)
 const consoleBuffer: string[] = [];
@@ -61,6 +64,51 @@ async function main() {
     process.exit(1);
   }
 
+  // Validate allowlist
+  if (config.allowedChatIds.length === 0 && !config.insecureMode) {
+    console.error(`
+╔════════════════════════════════════════════════════════════╗
+║              ALLOWED_CHAT_IDS Required                      ║
+╠════════════════════════════════════════════════════════════╣
+║  ALLOWED_CHAT_IDS is not set. This is required to         ║
+║  prevent unauthorized access to your bot.                  ║
+║                                                            ║
+║  1. Message @userinfobot on Telegram to get your chat ID  ║
+║  2. Set the variable:                                      ║
+║                                                            ║
+║     export ALLOWED_CHAT_IDS="your-chat-id"                ║
+║                                                            ║
+║  Multiple IDs: ALLOWED_CHAT_IDS="id1,id2"                 ║
+║                                                            ║
+║  To bypass (NOT recommended for production):               ║
+║     npm run server -- --insecure                           ║
+╚════════════════════════════════════════════════════════════╝
+`);
+    process.exit(1);
+  }
+
+  if (config.insecureMode) {
+    console.warn(`
+⚠️  WARNING: Running in --insecure mode
+   No ALLOWED_CHAT_IDS configured. The first user to /start will claim the bot.
+   This is NOT recommended for production use.
+`);
+  }
+
+  // Initialize hook secret and audit logger
+  const hookSecret = getOrCreateHookSecret();
+  const audit = new AuditLogger();
+
+  // Initialize rate limiters
+  const hookRateLimiter = new RateLimiter({ maxRequests: 120, windowMs: 60_000 });
+  const telegramRateLimiter = new RateLimiter({ maxRequests: 30, windowMs: 60_000 });
+
+  // Rate limiter cleanup interval
+  const rateLimitCleanupInterval = setInterval(() => {
+    hookRateLimiter.cleanup();
+    telegramRateLimiter.cleanup();
+  }, 5 * 60_000);
+
   // Initialize Telegram bot first (without interpreter)
   const bot = new TelegramBot(
     config.telegramBotToken,
@@ -70,7 +118,8 @@ async function main() {
     },
     () => consoleBuffer.slice(), // Return copy of buffer
     () => process.cwd(), // Default working directory for sessions
-    null
+    null,
+    { audit, rateLimiter: telegramRateLimiter }
   );
 
   // Initialize AI interpreter (optional - disabled by default)
@@ -109,6 +158,48 @@ async function main() {
     },
   });
 
+  // Hook endpoint authentication and rate limiting
+  app.addHook('onRequest', async (request, reply) => {
+    const url = request.url;
+
+    // Only authenticate /hook/ endpoints
+    if (!url.startsWith('/hook/')) return;
+
+    // Check Authorization header
+    const authHeader = request.headers.authorization;
+    if (!authHeader) {
+      auditAuth(audit, 'auth_failure_hook', {
+        ip: request.ip,
+        details: { reason: 'missing_header', url },
+      });
+      reply.code(401).send({ error: 'Authorization header required' });
+      return;
+    }
+
+    const token = authHeader.replace(/^Bearer\s+/i, '');
+    const tokenBuf = Buffer.from(token);
+    const secretBuf = Buffer.from(hookSecret);
+
+    if (tokenBuf.length !== secretBuf.length || !crypto.timingSafeEqual(tokenBuf, secretBuf)) {
+      auditAuth(audit, 'auth_failure_hook', {
+        ip: request.ip,
+        details: { reason: 'invalid_token', url },
+      });
+      reply.code(403).send({ error: 'Invalid authorization token' });
+      return;
+    }
+
+    // Rate limit hook endpoints
+    if (!hookRateLimiter.check(request.ip)) {
+      auditAuth(audit, 'rate_limited_hook', {
+        ip: request.ip,
+        details: { url },
+      });
+      reply.code(429).send({ error: 'Too many requests' });
+      return;
+    }
+  });
+
   // Health check
   app.get('/health', async () => {
     return {
@@ -144,6 +235,15 @@ async function main() {
         await bot.handleAskUserQuestion(id, questions, payload.cwd);
       }
 
+      auditPermission(audit, 'permission_allow', {
+        sessionId: payload.session_id,
+        toolName: payload.tool_name,
+        toolInput: payload.tool_input,
+        decision: 'allow',
+        reason: 'AskUserQuestion intercepted for Telegram',
+        ip: request.ip,
+      });
+
       // Allow the tool to proceed - the TUI will appear but we'll answer via PTY
       return {
         hookSpecificOutput: {
@@ -158,6 +258,14 @@ async function main() {
     const matchedRule = evaluateAutoApproveRules(payload, autoApproveRules);
     if (matchedRule) {
       logToBuffer(`[${id}] Rule "${matchedRule.name}" matched: ${matchedRule.action} (${matchedRule.reason || 'no reason'})`);
+      auditPermission(audit, 'permission_rule_match', {
+        sessionId: payload.session_id,
+        toolName: payload.tool_name,
+        toolInput: payload.tool_input,
+        decision: matchedRule.action,
+        reason: `Rule: ${matchedRule.name}`,
+        ip: request.ip,
+      });
       return {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -187,6 +295,15 @@ async function main() {
         ).catch(() => {});
       }
 
+      auditPermission(audit, 'permission_auto_approve', {
+        sessionId: payload.session_id,
+        toolName: payload.tool_name,
+        toolInput: payload.tool_input,
+        decision: 'allow',
+        reason: 'Auto-approved (Allow All mode)',
+        ip: request.ip,
+      });
+
       return {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -199,6 +316,14 @@ async function main() {
     // Check if bot is connected
     if (!bot.getChatId()) {
       logToBuffer(`[${id}] No Telegram chat connected. Denying by default.`);
+      auditPermission(audit, 'permission_deny', {
+        sessionId: payload.session_id,
+        toolName: payload.tool_name,
+        toolInput: payload.tool_input,
+        decision: 'deny',
+        reason: 'No Telegram chat connected',
+        ip: request.ip,
+      });
       return {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -221,18 +346,38 @@ async function main() {
 
       logToBuffer(`[${id}] Decision: ${decision}`);
 
+      const event = decision === 'allow' ? 'permission_allow' : 'permission_deny';
+      const reason = decision === 'allow' ? 'Approved via Telegram' : 'Denied via Telegram';
+      auditPermission(audit, event, {
+        sessionId: payload.session_id,
+        toolName: payload.tool_name,
+        toolInput: payload.tool_input,
+        decision,
+        reason,
+        chatId: bot.getChatId() || undefined,
+        ip: request.ip,
+      });
+
       const response: HookResponse = {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
           permissionDecision: decision,
-          permissionDecisionReason:
-            decision === 'allow' ? 'Approved via Telegram' : 'Denied via Telegram',
+          permissionDecisionReason: reason,
         },
       };
 
       return response;
     } catch (err) {
       console.error(`[${id}] Error:`, err);
+      auditPermission(audit, 'permission_deny', {
+        sessionId: payload.session_id,
+        toolName: payload.tool_name,
+        toolInput: payload.tool_input,
+        decision: 'deny',
+        reason: 'Error processing request',
+        ip: request.ip,
+        details: { error: String(err) },
+      });
       return {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -279,6 +424,8 @@ async function main() {
 ╠════════════════════════════════════════════════════════════╣
 ║  HTTP Server: http://${config.serverHost}:${config.serverPort}                       ║
 ║  Telegram Bot: ${bot.getChatId() ? 'Connected (' + bot.getChatId() + ')' : 'Waiting for /start...'}
+║  Hook Secret: ${getHookSecretPath()}
+║  Audit Log:   ~/.claude-bridge/audit.log                   ║
 ║                                                            ║
 ║  Telegram Commands:                                        ║
 ║    /status    - Show mode, pending requests, output        ║
@@ -286,8 +433,8 @@ async function main() {
 ║    /stopallow - Disable auto-approve mode                  ║
 ║                                                            ║
 ║  Endpoints:                                                ║
-║    POST /hook/permission  - Permission request hook        ║
-║    POST /hook/post-tool   - Post-tool action tracking      ║
+║    POST /hook/permission  - Permission request hook (auth) ║
+║    POST /hook/post-tool   - Post-tool action tracking(auth)║
 ║    GET  /health           - Health check                   ║
 ╚════════════════════════════════════════════════════════════╝
 `);
@@ -299,6 +446,8 @@ async function main() {
   // Handle graceful shutdown
   const shutdown = async () => {
     console.log('\nShutting down...');
+    clearInterval(rateLimitCleanupInterval);
+    audit.close();
     // Kill all PTY sessions
     bot.getSessionManager().killAll();
     await bot.stop();

@@ -6,6 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 
 import type { AIConfig, AutoApproveRule } from '../ai/types.js';
 
@@ -19,6 +20,7 @@ export interface Config {
   recentFolders: string[];
   ai?: AIConfig;
   autoApproveRules?: AutoApproveRule[];
+  insecureMode?: boolean;
 }
 
 const CONFIG_PATH = path.join(
@@ -33,6 +35,9 @@ export function loadConfig(): Config {
     ? process.env.ALLOWED_CHAT_IDS.split(',').map(id => id.trim()).filter(Boolean)
     : [];
 
+  // Check for --insecure flag
+  const insecureMode = process.argv.includes('--insecure');
+
   // Start with defaults
   const config: Config = {
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
@@ -42,6 +47,7 @@ export function loadConfig(): Config {
     serverHost: process.env.HOST || '127.0.0.1',
     logLevel: (process.env.LOG_LEVEL as Config['logLevel']) || 'info',
     recentFolders: [],
+    insecureMode,
   };
 
   // Try to load from file
@@ -149,6 +155,46 @@ function getLogLevel(): number {
     _logLevel = LOG_LEVELS[level] ?? LOG_LEVELS.info;
   }
   return _logLevel;
+}
+
+const HOOK_SECRET_PATH = path.join(
+  process.env.HOME || '~',
+  '.claude-bridge',
+  '.hook-secret'
+);
+
+/**
+ * Get the path to the hook secret file.
+ */
+export function getHookSecretPath(): string {
+  return HOOK_SECRET_PATH;
+}
+
+/**
+ * Read or generate the shared hook secret.
+ * Stored as 64-char hex at ~/.claude-bridge/.hook-secret with mode 0600.
+ */
+export function getOrCreateHookSecret(): string {
+  const dir = path.dirname(HOOK_SECRET_PATH);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  }
+
+  try {
+    if (fs.existsSync(HOOK_SECRET_PATH)) {
+      const secret = fs.readFileSync(HOOK_SECRET_PATH, 'utf-8').trim();
+      if (secret.length >= 32) {
+        return secret;
+      }
+    }
+  } catch {
+    // Fall through to generate
+  }
+
+  // Generate new secret
+  const secret = crypto.randomBytes(32).toString('hex'); // 64-char hex
+  fs.writeFileSync(HOOK_SECRET_PATH, secret, { mode: 0o600 });
+  return secret;
 }
 
 export const logger = {

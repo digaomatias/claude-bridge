@@ -11,6 +11,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/server.ts",
+    "dev:insecure": "tsx watch src/server.ts -- --insecure",
     "start": "node dist/server.js",
     "server": "tsx src/server.ts",
     "poc:server": "tsx src/poc/hook-server.ts",

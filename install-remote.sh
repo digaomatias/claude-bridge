@@ -184,6 +184,24 @@ npm run build --silent
 echo -e "${GREEN}✓ ClaudeBridge installed${NC}"
 echo ""
 
+# Generate hook secret
+echo -e "${YELLOW}Generating hook secret...${NC}"
+node -e '
+const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
+const secretPath = path.join(process.env.HOME || "~", ".claude-bridge", ".hook-secret");
+if (!fs.existsSync(secretPath) || fs.readFileSync(secretPath, "utf-8").trim().length < 32) {
+    const secret = crypto.randomBytes(32).toString("hex");
+    fs.writeFileSync(secretPath, secret, { mode: 0o600 });
+    console.log("Hook secret generated at " + secretPath);
+} else {
+    console.log("Hook secret already exists");
+}
+'
+echo -e "${GREEN}✓ Hook secret ready${NC}"
+echo ""
+
 # Setup .env
 ENV_FILE="$INSTALL_DIR/.env"
 if [ ! -f "$ENV_FILE" ]; then
@@ -241,14 +259,14 @@ if [ -f "$CLAUDE_SETTINGS" ]; then
                 matcher: "",
                 hooks: [{
                     type: "command",
-                    command: "curl -s -X POST http://localhost:3847/hook/permission -H '\''Content-Type: application/json'\'' -d @-"
+                    command: "curl -s -X POST http://localhost:3847/hook/permission -H '\''Content-Type: application/json'\'' -H \"Authorization: Bearer $(cat ~/.claude-bridge/.hook-secret)\" -d @-"
                 }]
             }],
             PostToolUse: [{
                 matcher: "",
                 hooks: [{
                     type: "command",
-                    command: "curl -s -X POST http://localhost:3847/hook/post-tool -H '\''Content-Type: application/json'\'' -d @-"
+                    command: "curl -s -X POST http://localhost:3847/hook/post-tool -H '\''Content-Type: application/json'\'' -H \"Authorization: Bearer $(cat ~/.claude-bridge/.hook-secret)\" -d @-"
                 }]
             }]
         };
@@ -278,7 +296,7 @@ else
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s -X POST http://localhost:3847/hook/permission -H 'Content-Type: application/json' -d @-"
+            "command": "curl -s -X POST http://localhost:3847/hook/permission -H 'Content-Type: application/json' -H \"Authorization: Bearer $(cat ~/.claude-bridge/.hook-secret)\" -d @-"
           }
         ]
       }
@@ -289,7 +307,7 @@ else
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s -X POST http://localhost:3847/hook/post-tool -H 'Content-Type: application/json' -d @-"
+            "command": "curl -s -X POST http://localhost:3847/hook/post-tool -H 'Content-Type: application/json' -H \"Authorization: Bearer $(cat ~/.claude-bridge/.hook-secret)\" -d @-"
           }
         ]
       }

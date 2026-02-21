@@ -25,6 +25,9 @@ import {
 } from '../core/config.js';
 import type { Interpreter } from '../ai/interpreter.js';
 import type { AIAction, ObservationCallbacks } from '../ai/types.js';
+import type { AuditLogger } from '../core/audit.js';
+import { auditAuth } from '../core/audit.js';
+import type { RateLimiter } from '../core/rate-limiter.js';
 
 import sharp from 'sharp';
 
@@ -145,18 +148,25 @@ export class TelegramBot {
   // AI interpreter (optional)
   private interpreter: Interpreter | null = null;
 
+  // Security: audit logger and rate limiter
+  private audit: AuditLogger | null = null;
+  private rateLimiter: RateLimiter | null = null;
+
   constructor(
     token: string,
     onChatIdChange?: ChatIdCallback,
     getConsoleOutput?: GetConsoleOutputCallback,
     getDefaultCwd?: GetDefaultCwdCallback,
-    interpreter?: Interpreter | null
+    interpreter?: Interpreter | null,
+    security?: { audit?: AuditLogger; rateLimiter?: RateLimiter }
   ) {
     this.bot = new Bot(token);
     this.onChatIdChange = onChatIdChange || null;
     this.getConsoleOutput = getConsoleOutput || null;
     this.getDefaultCwd = getDefaultCwd || null;
     this.interpreter = interpreter || null;
+    this.audit = security?.audit || null;
+    this.rateLimiter = security?.rateLimiter || null;
     this.sessionManager = new SessionManager();
 
     // Load allowed chat IDs from config
@@ -189,6 +199,39 @@ export class TelegramBot {
 
     // No chat ID registered yet — only /start should proceed (handled in /start handler)
     return false;
+  }
+
+  /**
+   * Wrapper around isAuthorized that also logs auth failures
+   * and checks rate limiting. Returns true if allowed.
+   */
+  private checkAuthorization(ctx: Context): boolean {
+    const chatId = ctx.chat?.id?.toString();
+
+    if (!this.isAuthorized(ctx)) {
+      if (this.audit && chatId) {
+        const username = (ctx.from as any)?.username || 'unknown';
+        const messageText = (ctx.message as any)?.text || '';
+        auditAuth(this.audit, 'auth_failure_telegram', {
+          chatId,
+          details: {
+            username,
+            message: messageText.slice(0, 100),
+          },
+        });
+      }
+      return false;
+    }
+
+    // Rate limit after auth passes
+    if (this.rateLimiter && chatId) {
+      if (!this.rateLimiter.check(chatId)) {
+        // Silently drop rate-limited messages
+        return false;
+      }
+    }
+
+    return true;
   }
 
   isAutoApproveMode(): boolean {
@@ -1121,6 +1164,12 @@ export class TelegramBot {
       // If an allowlist is configured, check it
       if (this.allowedChatIds.length > 0 && !this.allowedChatIds.includes(incomingChatId)) {
         console.log(`Rejected /start from unauthorized chat ID: ${incomingChatId}`);
+        if (this.audit) {
+          auditAuth(this.audit, 'bot_start_rejected', {
+            chatId: incomingChatId,
+            details: { reason: 'not_in_allowlist', username: (ctx.from as any)?.username },
+          });
+        }
         await ctx.reply(`You are not authorized to use this bot.`);
         return;
       }
@@ -1129,8 +1178,19 @@ export class TelegramBot {
       // (unless the incoming one is in the allowlist, which is checked above)
       if (this.chatId && this.chatId !== incomingChatId && this.allowedChatIds.length === 0) {
         console.log(`Rejected /start from chat ID ${incomingChatId} (already registered to ${this.chatId})`);
+        if (this.audit) {
+          auditAuth(this.audit, 'bot_start_rejected', {
+            chatId: incomingChatId,
+            details: { reason: 'already_registered', username: (ctx.from as any)?.username },
+          });
+        }
         await ctx.reply(`This bot is already connected to another chat. Access denied.`);
         return;
+      }
+
+      // Warn if operating without allowlist (insecure mode)
+      if (this.allowedChatIds.length === 0) {
+        logger.warn(`[Bot] /start accepted without allowlist (insecure mode) from chat ID: ${incomingChatId}`);
       }
 
       this.chatId = incomingChatId;
@@ -1138,6 +1198,13 @@ export class TelegramBot {
       // Persist the chat ID
       if (this.onChatIdChange) {
         this.onChatIdChange(this.chatId);
+      }
+
+      if (this.audit) {
+        auditAuth(this.audit, 'bot_start', {
+          chatId: incomingChatId,
+          details: { username: (ctx.from as any)?.username },
+        });
       }
 
       await ctx.reply(
@@ -1159,7 +1226,7 @@ export class TelegramBot {
 
     // /status command - enhanced with mode, sessions, and console output
     this.bot.command('status', async (ctx) => {
-      if (!this.isAuthorized(ctx)) return;
+      if (!this.checkAuthorization(ctx)) return;
       const modeEmoji = this.autoApproveMode ? '⚡' : '🔒';
       const modeText = this.autoApproveMode ? 'Auto-Approve' : 'Manual';
       const modeInfo = this.autoApproveMode
@@ -1205,7 +1272,7 @@ export class TelegramBot {
 
     // /allowall command - enable auto-approve mode
     this.bot.command('allowall', async (ctx) => {
-      if (!this.isAuthorized(ctx)) return;
+      if (!this.checkAuthorization(ctx)) return;
       if (this.autoApproveMode) {
         await ctx.reply(
           `⚡ Auto-approve mode is already active.\n` +
@@ -1232,7 +1299,7 @@ export class TelegramBot {
 
     // /stopallow command - disable auto-approve mode
     this.bot.command('stopallow', async (ctx) => {
-      if (!this.isAuthorized(ctx)) return;
+      if (!this.checkAuthorization(ctx)) return;
       if (!this.autoApproveMode) {
         await ctx.reply(`🔒 Manual mode is already active.`);
         return;
@@ -1260,7 +1327,7 @@ export class TelegramBot {
 
     // /help command
     this.bot.command('help', async (ctx) => {
-      if (!this.isAuthorized(ctx)) return;
+      if (!this.checkAuthorization(ctx)) return;
       await ctx.reply(
         `🤖 *ClaudeBridge Help*\n\n` +
           `*Session Commands:*\n` +
@@ -1298,7 +1365,7 @@ export class TelegramBot {
 
     // /spawn command - start new Claude Code session
     this.bot.command('spawn', async (ctx) => {
-      if (!this.isAuthorized(ctx)) return;
+      if (!this.checkAuthorization(ctx)) return;
       let input = ctx.message?.text?.replace(/^\/spawn\s*/, '').trim() || '';
 
       // Normalize dashes (Telegram on mobile converts -- to em-dash —)
@@ -1379,7 +1446,7 @@ export class TelegramBot {
 
     // /context command - get recent output from session
     this.bot.command('context', async (ctx) => {
-      if (!this.isAuthorized(ctx)) return;
+      if (!this.checkAuthorization(ctx)) return;
       const args = ctx.message?.text?.replace(/^\/context\s*/, '').trim();
       const lines = parseInt(args || '20', 10);
 
@@ -1418,7 +1485,7 @@ export class TelegramBot {
 
     // /sessions command - list active sessions
     this.bot.command('sessions', async (ctx) => {
-      if (!this.isAuthorized(ctx)) return;
+      if (!this.checkAuthorization(ctx)) return;
       const sessions = this.sessionManager.listSessions();
 
       if (sessions.length === 0) {
@@ -1452,7 +1519,7 @@ export class TelegramBot {
 
     // /kill command - terminate a session
     this.bot.command('kill', async (ctx) => {
-      if (!this.isAuthorized(ctx)) return;
+      if (!this.checkAuthorization(ctx)) return;
       const sessionId = ctx.message?.text?.replace(/^\/kill\s*/, '').trim();
 
       if (!sessionId) {
@@ -1493,7 +1560,7 @@ export class TelegramBot {
 
     // /folders command - manage recent folder history
     this.bot.command('folders', async (ctx) => {
-      if (!this.isAuthorized(ctx)) return;
+      if (!this.checkAuthorization(ctx)) return;
       const args = ctx.message?.text?.replace(/^\/folders\s*/, '').trim() || '';
 
       // /folders clear - clear all history
@@ -1552,7 +1619,7 @@ export class TelegramBot {
 
     // /ai command - manage AI interpreter
     this.bot.command('ai', async (ctx) => {
-      if (!this.isAuthorized(ctx)) return;
+      if (!this.checkAuthorization(ctx)) return;
       const args = ctx.message?.text?.replace(/^\/ai\s*/, '').trim().toLowerCase();
 
       if (!args || args === 'status') {
@@ -1653,7 +1720,7 @@ export class TelegramBot {
 
     // /keys command - send specific keystrokes for testing TUI navigation
     this.bot.command('keys', async (ctx) => {
-      if (!this.isAuthorized(ctx)) return;
+      if (!this.checkAuthorization(ctx)) return;
       const args = ctx.message?.text?.replace(/^\/keys\s*/, '').toLowerCase().split(/\s+/) || [];
 
       if (!this.activeSessionId) {
@@ -1732,7 +1799,7 @@ export class TelegramBot {
 
     // /input command - send raw input to active session
     this.bot.command('input', async (ctx) => {
-      if (!this.isAuthorized(ctx)) return;
+      if (!this.checkAuthorization(ctx)) return;
       const text = ctx.message?.text?.replace(/^\/input\s*/, '');
 
       if (!this.activeSessionId) {
@@ -1764,7 +1831,7 @@ export class TelegramBot {
 
     // /actions command - show completed actions for active session
     this.bot.command('actions', async (ctx) => {
-      if (!this.isAuthorized(ctx)) return;
+      if (!this.checkAuthorization(ctx)) return;
       const args = ctx.message?.text?.replace(/^\/actions\s*/, '').trim();
       const limit = parseInt(args || '10', 10);
 
@@ -1807,7 +1874,7 @@ export class TelegramBot {
 
     // /screenshot command - capture terminal as image
     this.bot.command('screenshot', async (ctx) => {
-      if (!this.isAuthorized(ctx)) return;
+      if (!this.checkAuthorization(ctx)) return;
       if (!this.activeSessionId) {
         await ctx.reply(
           `❌ No active session.\n\n` + `Use \`/spawn <task>\` to start one.`,
@@ -1891,7 +1958,7 @@ export class TelegramBot {
 
     // Handle callback queries (button presses)
     this.bot.on('callback_query:data', async (ctx) => {
-      if (!this.isAuthorized(ctx)) {
+      if (!this.checkAuthorization(ctx)) {
         await ctx.answerCallbackQuery({ text: 'Unauthorized' });
         return;
       }
@@ -2196,7 +2263,7 @@ export class TelegramBot {
 
     // Handle regular text messages - send to active session
     this.bot.on('message:text', async (ctx) => {
-      if (!this.isAuthorized(ctx)) return;
+      if (!this.checkAuthorization(ctx)) return;
       const text = ctx.message.text;
 
       // Ignore commands (they're handled by command handlers)
